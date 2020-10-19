@@ -1,0 +1,277 @@
+---
+title: "Florentine ERGM"
+author: "Patricio Davila"
+date: "3/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = "C:/Users/PatricioDB/Documents/Edgelist/Florentine")
+```
+
+```{r}
+library(statnet)
+library(coda)
+library(network)
+library(sna)
+
+```
+```{r}
+data(package='network')
+data(flo)
+class(flo)
+nflo <- network(flo, directed=FALSE)
+summary(nflo)
+network.size(nflo) #How large is the network?
+network.edgecount(nflo) #How many edges are present?
+plot(nflo,displaylabels=T,boxed.labels=F) #Plot with names 
+```
+```{r}
+betweenness(flo)
+isolates(nflo)
+S <- gplot(nflo,displaylabels=T)
+library(GGally)
+library(ggnet)
+ggnet2(flo, node.size = 6, node.color = "black", edge.size = 1, edge.color = "grey", label=TRUE)
+ggnet2(flo, color = "phono", palette = "Set1", size = 0) +
+  geom_point(aes(color = color), size = 12, color = "white") +
+  geom_point(aes(color = color), size = 12, alpha = 0.5) +
+  geom_point(aes(color = color), size = 9) +
+  geom_text(aes(label = toupper(substr(label, 1, 8))), color = "black", fontface = "bold") +
+  guides(color = FALSE)
+ggsave("Florentine.png")
+
+gplot3d(nflo,displaylabels=T)
+kcycle.census(nflo,mode='graph',maxlen=5)
+
+```
+```{r}
+data(ergm) # tells us the datasets in our packages
+data(florentine) # loads flomarriage & flobusiness data
+flomarriage # Let’s look at the flomarriage data
+plot(flomarriage) # Let’s view the flomarriage network 
+flomodel.01 <- ergm(flomarriage~edges)
+flomodel.01
+summary(flomodel.01) 
+flomodel.02 <- ergm(flomarriage~edges+triangle)
+summary(flomodel.02)
+flomodel.02
+#-1.673 * change in the number of ties + 0.139 * change in number of triangles 
+#if the tie will not add any triangles to the network, its log-odds. is -1.673.
+#if it will add one triangle to the network, its log-odds is -1.673 + 0.139 = -1.534
+#if it will add two triangles to the network, its log-odds is: -1.673 + 0.139*2 = -1.395
+#the corresponding probabilities are 0.158, 0.177, and 0.199
+expit <- function(x){
+  Things <- exp(x)/(1+exp(x))
+  return(Things)
+}
+library(tidyverse)
+Coefs <- flomodel.02$coef %>% as.list() %>% as.numeric()
+
+
+RegresaLogOdds <- function(coef,Cuantas){
+  #acepta dos para cada argumento 
+  #Aristas es una
+  #Triangulo es 3
+  Factor <- c()
+  for(i in seq(coef)){
+    FUN <- Cuantas[i]
+    #print(FUN)
+    Valor <- coef[i]
+    #print(Valor)
+    Factor[i] <- Valor*FUN
+    #print(Probabilidad)
+  }
+  log_odds <- Factor
+  #Probabilidad <- expit(Probabilidad)
+  return(log_odds)
+}
+
+RegresaProbabilidad <- function(log_odds){
+  log_odds <- sum(log_odds)
+  Thing <- expit(log_odds)
+  return(Thing)
+}
+  
+logOddsFlorentino <- RegresaLogOdds(c(Coefs),c(1,2))  
+logOddsFlorentino
+ProbabilidadFlorentina <- RegresaProbabilidad(logOddsFlorentino)
+ProbabilidadFlorentina
+
+
+FuncionAcumulada <- function(Coefs,Cambio){
+  IndexSave2 <- list()
+IndexSave <- list()
+for(i in seq(100)){
+  logOddsFlorentino <- RegresaLogOdds(c(Coefs),c(Cambio,i-1))
+  logOddsFlorentino
+ProbabilidadFlorentina <- RegresaProbabilidad(logOddsFlorentino)
+ProbabilidadFlorentina
+  IndexSave2[i] <- list(logOddsFlorentino)
+  IndexSave[i] <- ProbabilidadFlorentina
+}
+
+  return(list(IndexSave2,IndexSave))
+}  
+
+EdgeTriangle <- FuncionAcumulada(Coefs,1)
+
+Cambios <- data.frame(unlist(c(EdgeTriangle[[2]])))
+IterLogOdds <- data.frame(unlist(c(EdgeTriangle[[1]])))
+
+names(Cambios) <- c("Probabilidad")
+
+CambiosYTotal <- Cambios %>% 
+  mutate(Cambio = round(100*(Probabilidad - lag(Probabilidad)),4))
+
+par(mfrow=c(1,2))
+plot(seq(100),CambiosYTotal$Probabilidad)
+plot(seq(100),CambiosYTotal$Cambio)
+
+```
+
+```{r}
+fit <- ergm(flomarriage~edges+triangle)
+summary(fit)
+mcmc.diagnostics(fit)
+#Dropppingsamplingdownto1
+fit <- ergm(flomarriage~edges+triangle,
+            control=control.ergm(MCMC.interval=1024))
+mcmc.diagnostics(fit)
+
+fit.sim <- simulate(fit,nsim=100)
+summary(fit.sim)
+attributes(fit.sim) # what's in this object?
+
+rbind("obs"=summary(flomarriage~edges+triangle),
+      "sim mean"=colMeans(attr(fit.sim, "stats")))
+
+
+plot(fit.sim[[1]], 
+     label= fit.sim[[1]] %v% "vertex.names",
+     vertex.cex = (fit.sim[[1]] %v% "wealth")/25)
+
+
+ggnet2(fit.sim[[1]], node.size = 6, node.color = "black", edge.size = 1, edge.color = "grey", label=TRUE)
+ggnet2(fit.sim[[1]], color = "phono", palette = "Set1", size = 0) +
+  geom_point(aes(color = color), size = 12, color = "white") +
+  geom_point(aes(color = color), size = 12, alpha = 0.5) +
+  geom_point(aes(color = color), size = 9) +
+  geom_text(aes(label = toupper(substr(label, 1, 8))), color = "black", fontface = "bold") +
+  guides(color = FALSE)
+ggsave("FlorentineSIM.png")
+
+fit.gof <- gof(fit)
+fit.gof
+plot(fit.gof)
+
+
+fit2 <- ergm(flobusiness~edges+gwesp(0.25,fixed=T),
+            verbose=T)
+mcmc.diagnostics(fit2)
+
+gof(fit2, GOF=~model)
+
+fit <- ergm(flomarriage~edges+gwesp(0.25,fixed=T))
+summary(fit)
+pdf('diagnostics.pdf')
+mcmc.diagnostics(fit)
+dev.off()
+
+fit.gof <- gof(fit)
+fit.gof
+plot(fit.gof)
+
+
+```
+
+
+
+```{r}
+flomodel.02$coef # the $ allows you to pull an element out from
+flomodel.02$mle.lik # a list
+flomodel.02$formula
+```
+```{r}
+wealth <- flomarriage %v% 'wealth' # the %v% extracts vertex attributes from a network
+wealth
+plot(flomarriage, vertex.cex=wealth/25) # network plot with vertex size proportional to wealth
+flomodel.03 <- ergm(flomarriage~edges+nodecov('wealth'))
+summary(flomodel.03)
+
+```
+
+
+```{r}
+help('ergm-terms') 
+```
+
+```{r}
+#edges, density, meandeg,nodecov,nodefactor,nodemix,nodematch, degree, kstar, cycle, 
+flomodel.03.sim <- simulate(flomodel.03,nsim=10)
+class(flomodel.03.sim)
+names(flomodel.03.sim)
+flomodel.03.sim[[1]]
+plot(flomodel.03.sim[[1]]) 
+```
+```{r}
+#Goodness of fit
+flomodel.03.gof <- gof(flomodel.03~degree) 
+
+flomodel.03.gof
+plot(flomodel.03.gof) 
+```
+```{r}
+control.ergm(seed = 2)
+fit <- ergm(flobusiness~edges+degree(1), interval=1, burnin=1000,verbose=TRUE) 
+mcmc.diagnostics(fit, center=F) 
+
+```
+```{r}
+control.ergm(seed=1)
+data("faux.magnolia.high")
+magnolia <- faux.magnolia.high 
+fit <- ergm(magnolia~edges+gwesp(0.5,fixed=T))
+mcmc.diagnostics(fit) 
+
+fit <- ergm(magnolia~edges+gwesp(0.5,fixed=T)+nodematch('Grade')+nodematch('Race')+
+ nodematch('Sex'),seed=1,verbose=T) 
+pdf('diagnostics.pdf')
+mcmc.diagnostics(fit)
+dev.off() 
+
+```
+```{r}
+fit <- ergm(magnolia~edges+gwesp(0.25,fixed=T)+nodematch('Grade')+nodematch('Race')+
+ nodematch('Sex'))
+pdf('diagnostics.pdf')
+mcmc.diagnostics(fit)
+dev.off() 
+
+
+mesamodel.02 <- ergm(magnolia~edges)
+mesamodel.02.gof <- gof(mesamodel.02~distance,control=control.gof.ergm(nsim=10))
+plot(mesamodel.02.gof)
+
+
+```
+
+```{r}
+data('faux.magnolia.high')
+magnolia <- faux.magnolia.high
+plot(magnolia, vertex.cex=.5)
+control.ergm(seed=1)
+
+fit <- ergm(magnolia~edges+triangle, control=control.ergm(seed=1), verbose=T)
+
+
+fit <- ergm(magnolia~edges+gwesp(0.25,fixed=T)+nodematch('Grade')+nodematch('Race')+
+nodematch('Sex'),
+control = control.ergm(seed=1,MCMC.samplesize=4096,MCMC.interval=8192),
+verbose=T)
+mcmc.diagnostics(fit)
+```
+
+
