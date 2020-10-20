@@ -1,0 +1,381 @@
+---
+title: "Expanded Lotame ERGM Model"
+author: "Patricio Davila"
+date: "9/8/2020"
+output: html_document
+---
+
+```{r, warning=FALSE,echo=FALSE}
+rm(list = ls())
+library(tidyverse)
+library(statnet)
+library(coda)
+library(network)
+library(sna)
+library(network)
+library(igraph)
+library(intergraph)
+
+```
+
+```{r}
+
+expit <- function(x){
+  Things <- exp(x)/(1+exp(x))
+  return(Things)
+}
+library(tidyverse)
+
+RegresaLogOdds <- function(coef,Cuantas){
+  #acepta dos para cada argumento 
+  #Aristas es una
+  #Triangulo es 3
+  Factor <- c()
+  for(i in seq(coef)){
+    FUN <- Cuantas[i]
+    #print(FUN)
+    Valor <- coef[i]
+    #print(Valor)
+    Factor[i] <- Valor*FUN
+    #print(Probabilidad)
+  }
+  log_odds <- Factor
+  #Probabilidad <- expit(Probabilidad)
+  return(log_odds)
+}
+
+RegresaProbabilidad <- function(log_odds){
+  log_odds <- sum(log_odds)
+  Thing <- expit(log_odds)
+  return(Thing)
+}
+
+
+
+FuncionAcumulada <- function(Coefs,Cambio){
+  IndexSave2 <- list()
+IndexSave <- list()
+
+
+for(i in seq(100)){
+  logOddsFlorentino <- RegresaLogOdds(c(Coefs),c(Cambio,i-1))
+  logOddsFlorentino
+ProbabilidadFlorentina <- RegresaProbabilidad(logOddsFlorentino)
+ProbabilidadFlorentina
+  IndexSave2[i] <- list(logOddsFlorentino)
+  IndexSave[i] <- ProbabilidadFlorentina
+}
+
+  return(list(IndexSave2,IndexSave))
+}  
+
+
+```
+
+```{r}
+MasterTable <- read.csv("WeightedExpandedReplacedEdgelist.csv")
+Taxonomy <- read.csv("TaxonomyMain.csv")
+
+#CustomTaxonomy
+Nodes <-  Taxonomy %>% 
+  as.tibble() %>%
+  mutate(node_id = seq(1:length(Taxonomy$Node_ID))) %>% 
+  #separate(Node_Name,into = paste0(seq(1:10)),sep="[^]") %>% 
+  mutate(Node_Name = str_replace(Node_Name,"-","[^]"))
+
+LDXShopping <- dplyr::filter(Nodes, grepl('Shopping|Retail|Market|Gift|Purchase', `Node_Name`))
+
+LDXCategory <- dplyr::filter(Nodes, grepl('Lotame Category Hierarchy', `Node_Name`))
+
+NodeList <- rbind(LDXShopping,LDXCategory) %>% unique()
+
+Mastaa <- MasterTable %>% 
+  inner_join(select(NodeList, Node_ID), by=c("To"="Node_ID")) %>% 
+  inner_join(select(NodeList, Node_ID), by=c("From"="Node_ID")) %>% 
+  rename(
+    from = From,
+    to = To
+    )
+
+
+```
+
+```{r}
+
+NodesX <- read.csv("node_level_data_Shorthand_Reducido.csv")
+
+
+#Add removing Factor level five.
+
+Nodes <- NodesX %>% 
+  #select(-c(Arbol_8)) %>% 
+  #select(-c(Arbol_7)) %>% 
+  #select(-c(Arbol_6)) %>% 
+  #select(-c(Arbol_5)) %>% 
+  #group_by(To, From,ToId,FromId) %>% 
+  #summarise(weight = n()) %>% 
+  ungroup() %>% 
+  mutate(Node_ID = as.factor(Node_ID))
+
+NewNodeList <- NodesX %>% 
+  filter(Node_ID == NEWID) %>% 
+  #select(-c(Arbol_8)) %>% 
+  #select(-c(Arbol_7)) %>% 
+  #select(-c(Arbol_6)) %>% 
+  #select(-c(Arbol_5)) %>% 
+  #group_by(To, From,ToId,FromId) %>% 
+  #summarise(weight = n()) %>% 
+  ungroup() %>% 
+  mutate(Node_ID = as.factor(Node_ID)) %>% 
+  mutate(Node_ID = as.character(Node_ID)) %>% 
+  mutate(NEWID = as.character(NEWID))
+
+
+EdgeFin <- Mastaa %>% 
+  filter(as.character(from) %in% NewNodeList$NEWID) %>% 
+  filter(as.character(to) %in% NewNodeList$NEWID)
+
+EdgeFin <- EdgeFin %>% 
+  group_by(to, from) %>% 
+  filter(to != from) %>% 
+  summarise(weight= sum(freq)) %>%
+  ungroup() %>% 
+  filter(from %in% NewNodeList$NEWID) %>% 
+  filter(to %in% NewNodeList$NEWID) %>% 
+  filter(weight > 200)
+
+#net <- igraph::graph_from_data_frame(d = Edges, vertices = Nodes,directed = FALSE)
+net <- igraph::graph_from_data_frame(d = EdgeFin, vertices = NewNodeList,directed = FALSE)
+directed_graph_wgt <- graph.data.frame(EdgeFin, directed = TRUE, vertices = NewNodeList)
+
+undirected_graph_wgt <- as.undirected(directed_graph_wgt, mode = "collapse",
+                                      edge.attr.comb = "sum")
+
+```
+
+
+
+```{r}
+
+set.seed(141719)
+Empieza <- asNetwork(undirected_graph_wgt)
+
+#summary(Empieza)
+#Modelling
+#save(Empieza, file = "stuff.RData")
+l <- layout_on_sphere(net)
+l2 <- layout_with_fr(net)
+plot(net, vertex.cex=.05,vertex.label=NA,layout=l2)
+cut.off <- mean(EdgeFin$weight) 
+
+net.sp <- delete_edges(net, E(net)[weight<cut.off])
+
+plot(net.sp) 
+
+
+```
+
+```{r}
+max_subgraph <- max_cliques(undirected_graph_wgt, min = NULL, max = NULL, subset = NULL,
+  file = NULL)
+
+max = 0
+for (i in seq(length(max_subgraph))){
+  size = length(max_subgraph[[i]])
+  if(size > max){
+    max = size
+    index = i
+  }
+}
+
+max_subgraph_graph <- induced_subgraph(
+  undirected_graph_wgt,
+  max_subgraph[[index]]
+)
+Empieza <- asNetwork(max_subgraph_graph)
+```
+```{r}
+library(RColorBrewer)
+set.seed(141719)
+l <- layout_on_sphere(max_subgraph_graph)
+l <- layout_with_fr(max_subgraph_graph)
+V(max_subgraph_graph)$size <- 8
+colrs <- sample(colors(),45)
+V(max_subgraph_graph)$frame.color <- "white"
+V(max_subgraph_graph)$group_id <- as_tibble(V(max_subgraph_graph)$ShortName_General) %>% group_by(value)%>% group_indices(value) 
+V(max_subgraph_graph)$color <- colrs[V(max_subgraph_graph)$group_id]
+V(max_subgraph_graph)$label <- "" 
+E(max_subgraph_graph)$arrow.mode <- 0
+plot(max_subgraph_graph,layout=l)
+```
+```{r,eval=FALSE}
+rm(net,net.sp,max_subgraph,undirected_graph_wgt,directed_graph_wgt)
+
+```
+
+
+```{r,eval=FALSE}
+library(ergm.count)
+FirstFit <- ergm(Empieza~triangle+nodematch("ShortName_General")+nodematch("ShortName_Specific"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+summary(FirstFit)
+```
+
+
+```{r, eval=FALSE}
+SecondFit <- ergm(Empieza~triangle+nodematch("ShortName_General"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+	
+
+```
+```{r}
+#                       edges                   threetrail 
+#               -8.9444108828                 0.0000458607 
+#             gwesp.fixed.0.1  nodematch.ShortName_General 
+#                1.3168135332                 2.1150998850 
+#nodematch.ShortName_Specific            nodematch.Arbol_4 
+#                0.3476784895                 1.3502096105 
+#           nodematch.Arbol_6            nodematch.Arbol_5 
+#                0.1954860731                -0.2514000852 
+```
+
+
+```{r, eval=FALSE}
+Twenty <- ergm(Empieza~threetrail+gwesp(.75,fixed=TRUE)+nodematch("ShortName_General")+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=2048,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+Twenty2 <- ergm(Empieza~threetrail+triangle+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=2048,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+Twenty <- ergm(Empieza~threetrail+nodematch("ShortName_General")+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=2048,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+TwentyOmega <- ergm(Empieza~threetrail+triangle+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=2048,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+```
+```{r, eval=FALSE}
+FourthFit <- ergm(Empieza~triangle+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+FifthFit <- ergm(Empieza~gwesp(.1,fixed=TRUE)+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+SixthFit <- ergm(Empieza~triangle+gwesp(.1,fixed=TRUE)+nodematch("Arbol_5"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+
+SevenFit <- ergm(Empieza~triangle+nodematch("Arbol_5")+nodematch("ShortName_General"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+EiightFit <- ergm(Empieza~gwesp(.1,fixed=TRUE)+nodematch("Arbol_5")+nodematch("ShortName_General"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+```
+
+```{r,eval=FALSE}
+NineFit <- ergm(Empieza~triangle+nodematch("Arbol_5")+nodematch("ShortName_Specific"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+TenFit <- ergm(Empieza~gwesp(.1,fixed=TRUE)+nodematch("Arbol_5")+nodematch("ShortName_Specific"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+ElevenFit <- ergm(Empieza~triangle+nodematch("Arbol_5")+nodematch("ShortName_Specific")+nodematch("Arbol_4"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+
+TwelveFit <- ergm(Empieza~gwesp(.1,fixed=TRUE)+nodematch("Arbol_5")+nodematch("ShortName_Specific")+nodematch("Arbol_4"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+ThirteenFit <- ergm(Empieza~gwesp(.1,fixed=TRUE)+nodematch("Arbol_5")+nodematch("Arbol_4"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+FourteenFit <- ergm(Empieza~triangle+nodematch("Arbol_5")+nodematch("Arbol_4"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+```
+```{r,eval=FALSE}
+TwentyFit <- ergm(Empieza~threetrail+nodematch("Arbol_5")+nodematch("ShortName_Specific"),control = control.ergm(seed=141719,MCMC.samplesize=1024,MCMC.interval=1024,parallel =4 ,
+parallel.type="PSOCK"),
+verbose=T)
+
+
+```
+
+```{r, eval=FALSE}
+name <- "TwelveFit"
+model <- TwelveFit
+
+
+  
+summary(model)
+pdf(paste('mcmc_diagnostics',name,'.pdf'))
+mcmc.diagnostics(model)
+dev.off() 
+
+GOF <- gof(model)
+
+pdf(paste('model_gof',name,'.pdf'))
+GOF
+dev.off()
+## See goodness of fit plots
+
+plot(GOF)
+
+###
+
+Coefs <- model$coef %>% as.list() %>% as.numeric()
+log_odds_model <- RegresaLogOdds(c(Coefs),c(1,2))  
+log_odds_model
+prob_model <- RegresaProbabilidad(log_odds_model)
+prob_model
+
+EdgeTriangle <- FuncionAcumulada(Coefs,1)
+
+Cambios <- data.frame(unlist(c(EdgeTriangle[[2]])))
+IterLogOdds <- data.frame(unlist(c(EdgeTriangle[[1]])))
+
+names(Cambios) <- c("Probabilidad")
+
+CambiosYTotal <- Cambios %>% 
+  mutate(Cambio = round(100*(Probabilidad - lag(Probabilidad)),4))
+par(mfrow=c(1,2))
+plot(seq(100),CambiosYTotal$Probabilidad)
+plot(seq(100),CambiosYTotal$Cambio)
+#edges, density, meandeg,nodecov,nodefactor,nodemix,nodematch, degree, kstar, cycle, 
+model.sim <- simulate(model,nsim=10)
+class(model.sim)
+names(model.sim)
+model.sim[[1]]
+plot(model.sim[[1]]) 
+
+# are the simulated stats centered on the observed stats?
+rbind("obs"=summary(Empieza~edges+nodecov("wealth")),
+      "sim mean"=colMeans(attr(model.sim, "stats"))) 
+
+#Goodness of fit
+model.sim.gof <- gof(model.sim~degree) 
+
+model.sim.gof
+plot(model.sim.gof) 
+
+
+```
+
+
